@@ -1,7 +1,4 @@
-// You may edit this file, add new files to support this file,
-// and/or add new dependencies to the project as you see fit.
-// However, you must not change the surface API presented from this file,
-// and you should not need to change any other files in the project to complete the challenge
+import { useEffect, useState } from 'react';
 
 type UseCachingFetch = (url: string) => {
   isLoading: boolean;
@@ -9,72 +6,101 @@ type UseCachingFetch = (url: string) => {
   error: Error | null;
 };
 
-/**
- * 1. Implement a caching fetch hook. The hook should return an object with the following properties:
- * - isLoading: a boolean that is true when the fetch is in progress and false otherwise
- * - data: the data returned from the fetch, or null if the fetch has not completed
- * - error: an error object if the fetch fails, or null if the fetch is successful
- *
- * This hook is called three times on the client:
- *  - 1 in App.tsx
- *  - 2 in Person.tsx
- *  - 3 in Name.tsx
- *
- * Acceptance Criteria:
- * 1. The application at /appWithoutSSRData should properly render, with JavaScript enabled, you should see a list of people.
- * 2. You should only see 1 network request in the browser's network tab when visiting the /appWithoutSSRData route.
- * 3. You have not changed any code outside of this file to achieve this.
- * 4. This file passes a type-check.
- *
- */
+// Errors are kept as strings because Error objects don't survive
+// JSON.stringify, and this cache gets sent to the browser as JSON.
+type CacheEntry = {
+  data: unknown;
+  error: string | null;
+};
+
+const cache = new Map<string, CacheEntry>();
+
+// Requests that are still running. Components that mount mid-request join
+// these instead of starting another fetch.
+const inFlight = new Map<string, Promise<void>>();
+
+// Never throws. A failed request is cached as an error, so the server renders
+// the app's error state instead of returning a 500.
+const load = (url: string): Promise<void> => {
+  const existing = inFlight.get(url);
+  if (existing) return existing;
+
+  const request = (async () => {
+    try {
+      const response = await fetch(url);
+      if (!response.ok) {
+        throw new Error(`${url} responded ${response.status}`);
+      }
+      cache.set(url, { data: await response.json(), error: null });
+    } catch (thrown) {
+      cache.set(url, {
+        data: null,
+        error: thrown instanceof Error ? thrown.message : String(thrown),
+      });
+    } finally {
+      inFlight.delete(url);
+    }
+  })();
+
+  inFlight.set(url, request);
+  return request;
+};
+
+// Reads the cache while rendering rather than in an effect. That's what lets
+// the server render real data, since effects never run server-side.
 export const useCachingFetch: UseCachingFetch = (url) => {
+  const [, setRenderCount] = useState(0);
+  const entry = cache.get(url);
+
+  useEffect(() => {
+    if (cache.has(url)) return;
+
+    let mounted = true;
+    load(url).then(() => {
+      if (mounted) setRenderCount((count) => count + 1);
+    });
+
+    return () => {
+      mounted = false;
+    };
+  }, [url]);
+
+  if (!entry) return { isLoading: true, data: null, error: null };
+
   return {
-    data: null,
     isLoading: false,
-    error: new Error(
-      'UseCachingFetch has not been implemented, please read the instructions in DevTask.md',
-    ),
+    data: entry.data,
+    error: entry.error === null ? null : new Error(entry.error),
   };
 };
 
-/**
- * 2. Implement a preloading caching fetch function. The function should fetch the data.
- *
- * This function will be called once on the server before any rendering occurs.
- *
- * Any subsequent call to useCachingFetch should result in the returned data being available immediately.
- * Meaning that the page should be completely serverside rendered on /appWithSSRData
- *
- * Acceptance Criteria:
- * 1. The application at /appWithSSRData should properly render, with JavaScript disabled, you should see a list of people.
- * 2. You have not changed any code outside of this file to achieve this.
- * 3. This file passes a type-check.
- *
- */
+// Fills the cache before the server renders, so the hook has something to read.
 export const preloadCachingFetch = async (url: string): Promise<void> => {
-  throw new Error(
-    'preloadCachingFetch has not been implemented, please read the instructions in DevTask.md',
-  );
+  await load(url);
 };
 
-/**
- * 3.1 Implement a serializeCache function that serializes the cache to a string.
- * 3.2 Implement an initializeCache function that initializes the cache from a serialized cache string.
- *
- * Together, these two functions will help the framework transfer your cache to the browser.
- *
- * The framework will call `serializeCache` on the server to serialize the cache to a string and inject it into the dom.
- * The framework will then call `initializeCache` on the browser with the serialized cache string to initialize the cache.
- *
- * Acceptance Criteria:
- * 1. The application at /appWithSSRData should properly render, with JavaScript enabled, you should see a list of people.
- * 2. You should not see any network calls to the people API when visiting the /appWithSSRData route.
- * 3. You have not changed any code outside of this file to achieve this.
- * 4. This file passes a type-check.
- *
- */
-export const serializeCache = (): string => '';
+// The framework drops this straight into a single-quoted <script> tag, so a
+// quote or a </script> in the data would otherwise break the page.
+const escapeForInlineScript = (json: string): string =>
+  json.replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/</g, '\\u003c');
 
-export const initializeCache = (serializedCache: string): void => {};
+export const serializeCache = (): string =>
+  escapeForInlineScript(JSON.stringify(Array.from(cache.entries())));
 
-export const wipeCache = (): void => {};
+// The escaping above is already undone by the time this runs. The browser does
+// it while parsing the script tag.
+export const initializeCache = (serializedCache: string): void => {
+  try {
+    const entries = JSON.parse(serializedCache) as [string, CacheEntry][];
+    for (const [url, entry] of entries) {
+      cache.set(url, entry);
+    }
+  } catch {
+    // A bad payload shouldn't break the page. Components fetch on the client instead.
+  }
+};
+
+export const wipeCache = (): void => {
+  cache.clear();
+  inFlight.clear();
+};
