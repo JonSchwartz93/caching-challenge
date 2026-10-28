@@ -1,9 +1,8 @@
 # People Directory
 
-Server-rendered React app, and the caching fetch library behind it.
+Server-rendered React app (and the accompanying caching fetch library).
 
-Inherited mid-build: the framework and the app were done, the caching library was
-stubs. Original brief in `DevTask.md`.
+For more context on the task, see `DevTask.md`.
 
 ## Getting started
 
@@ -14,10 +13,10 @@ npm start
 
 <http://localhost:3000>. Two routes show the two ways data can load:
 
-| Route                | Data loads                      | HTML contains |
-| -------------------- | ------------------------------- | ------------- |
-| `/appWithoutSSRData` | in the browser, after hydration | `Loading...`  |
-| `/appWithSSRData`    | on the server, before render    | all 75 people |
+| Route                | Data loads                         | HTML contains |
+| -------------------- | ---------------------------------- | ------------- |
+| `/appWithoutSSRData` | client-side, once React takes over | `Loading...`  |
+| `/appWithSSRData`    | server-side, before render         | all 75 people |
 
 ## Scripts
 
@@ -34,77 +33,74 @@ npm start
 ```
 framework/server       Fastify. Serves the routes, client.js, and the MSW worker.
 framework/client       Hydrates the app in the browser.
-framework/mock-server  MSW request handlers, shared by Node and the browser.
+framework/mock-server  Mock Service Worker handlers, shared by Node and the browser.
 application            The React app: App -> Person -> Name.
 caching-fetch-library  The part that was missing.
 ```
 
-All three components call `useCachingFetch` with the same URL. `App` renders 75
-`Person`s, each rendering a `Name`, so a loaded page makes **151 calls to one
-endpoint**. The library turns those into one network request, then hands the
+All three React components call `useCachingFetch` with the same URL. `App` renders 75
+`Person`s, each rendering a `Name`, so a loaded page invokes `useCachingFetch` **151 times**. The caching library turns those into a single network request, then hands the
 result to the browser so the SSR route doesn't fetch again.
 
-Requests are answered by MSW rather than the real network, so this runs offline.
+Requests are answered by Mock Service Worker, not the network, so this runs
+offline.
 
-## What I added
+## Production-readiness: _added_
 
 | Change                        | Why                                                                                                                                                                        |
 | ----------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `.gitignore`                  | Nothing existed, so `node_modules/`, `dist/`, `.DS_Store` and `.idea/` could all be committed by accident.                                                                 |
 | Committed `package-lock.json` | Without one, `npm i` grabs the newest allowed version of every package, so two people can get different code from the same `package.json`.                                 |
 | `typescript`                  | There was a `tsconfig.json` but no compiler, so the type-check Task 2 asks for couldn't be run at all.                                                                     |
-| `tsconfig.json` rewrite       | Was 200 lines of commented-out defaults. Cut to what's actually set, plus `noEmit`: esbuild does the real compiling, so tsc is only here to check types.                   |
-| `npm run typecheck`           | Turns "it type-checks" from a claim into a command.                                                                                                                        |
+| `tsconfig.json` rewrite       | Was 111 lines, nearly all commented-out defaults. Cut to what's in use, plus `noEmit`, since esbuild does the compiling and tsc only checks types.                         |
+| `npm run typecheck`           | Runs `tsc` locally and in CI.                                                                                                                                              |
 | `prettier` + config           | `.idea/prettier.xml` showed it was meant to be used but never set up. I matched the style already in the files, so nothing got reformatted and `git blame` stays readable. |
-| `.nvmrc`                      | Pins Node 22.                                                                                                                                                              |
+| `.nvmrc`                      | Pins the Node major to 22.                                                                                                                                                 |
 | GitHub Actions CI             | Runs typecheck, format check, and build on every push and pull request.                                                                                                    |
-| MSW worker path               | See below.                                                                                                                                                                 |
+| MSW worker path               | `msw.workerDirectory` pointed at a folder the build doesn't read, so installs never refreshed the worker that actually ships.                                              |
 
-## Deferred
+## Production-readiness: _deferred_
 
-| Item                            | Why not                                                                                                                                                                                                        |
-| ------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Tests (Vitest, one dedupe test) | Biggest gap. "Only 1 network request" is the one criterion you can't verify by reading the code. Vitest because the repo already builds with esbuild and Vitest runs on it; Jest would need a second compiler. |
-| ESLint                          | Most work to set up, least to gain on 200 lines of already-tidy code.                                                                                                                                          |
+| Item   | What I'd do                                                                                                                                         |
+| ------ | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Tests  | Vitest would be a good option here, over Jest, since the repo already builds with esbuild and Vitest runs on it. Jest would mean a second compiler. |
+| ESLint | Worth adding as the library grows, though 370 lines of already-consistent code gain little from it today.                                           |
 
 ## Pre-existing issues
 
-### Fixed: MSW was shipping a stale service worker
+1. **`window.__INITIAL_DATA__` isn't escaped.** `buildHtmlDoc.ts:14` drops the
+   cache straight into a single-quoted `<script>`. One apostrophe in the API data
+   breaks the page, and a `</script>` in it is an XSS hole. The current mock data
+   happens to contain no apostrophes, so this works by luck. I escape on the way
+   out of `serializeCache`, but the real fix belongs in the framework: put the
+   data in a `<script type="application/json">` tag and parse it, instead of
+   building JavaScript by string concatenation.
 
-`package.json` pointed `msw.workerDirectory` at `mockServer`, but the build copies
-the worker out of `framework/mock-server`. The folder was renamed at some point
-without updating the config, so every `npm install` refreshed a folder nothing
-read, while the file the build actually ships sat untouched. The browser was
-running a 2.3.1 worker against a 2.15.0 library. Repointed the config, refreshed
-the file.
+2. **Per-request cache isolation doesn't hold.** The cache outlives each request,
+   so without clearing it request #2 would see request #1's data. The framework
+   does that by calling `wipeCache()` at the start of every request
+   (`framework/server/index.ts:44,52`). But one shared cache can't isolate
+   anything: two overlapping requests use the same one, and either can wipe it
+   while the other is still reading. Fine for one person clicking around a demo,
+   wrong in production. Scoping the cache per request, with `AsyncLocalStorage`
+   or a cache passed in, would fix it, but that means changing the library's
+   public API.
 
-### Known issues
+3. **`validateData` runs in every component on every render.** All 151 components
+   re-validate all 75 records (`App.tsx:24`, `Person.tsx:19`, `Name.tsx:18`). It
+   should run once, where data enters the cache.
 
-**`window.__INITIAL_DATA__` isn't escaped.** `buildHtmlDoc.ts:14` drops the cache
-straight into a single-quoted `<script>`. One apostrophe in the API data breaks
-the page, and a `</script>` in it is an XSS hole. The current mock data happens to
-contain no apostrophes, so this works by luck. I escape on the way out of
-`serializeCache`, but the real fix belongs in the framework: put the data in a
-`<script type="application/json">` tag and parse it, instead of building
-JavaScript by string concatenation.
+4. **Dependency advisories.** `npm audit` flags issues in `esbuild`, `fastify`,
+   `find-my-way` and `valibot`. Every fix is a breaking change, so I left them.
+   The esbuild one only affects its dev server, which this project doesn't use.
 
-**Per-request cache isolation can't work.** The cache outlives each request, so
-without clearing it request #2 would see request #1's data. The framework does
-that by calling `wipeCache()` at the start of every request
-(`framework/server/index.ts:44,52`). But one shared cache can't isolate anything:
-two overlapping requests use the same one, and either can wipe it while the other
-is still reading. Fine for one person clicking around, wrong under real traffic. A
-request-scoped cache would fix it, but that means changing the library's public
-API.
+## Issues w/ my caching library implementation
 
-**`validateData` runs in every component on every render.** All 151 components
-re-validate all 75 records (`App.tsx:24`, `Person.tsx:19`, `Name.tsx:18`). It
-should run once, where data enters the cache.
+1. **Nothing ever expires.** There is no TTL and no revalidation, so once a URL
+   is cached the app never sees fresher data. One option could be to use
+   "stale-while-revalidate", where you serve the cached value immediately and
+   fetch the updated content in the background.
 
-`npm audit` also flags 4 known security bugs in `fastify` and `valibot`. Fixing
-any of them means a major version jump that could break the app, so I left them
-alone.
-
-## Notes on the caching library
-
-<!-- TODO (Phase 4) -->
+2. **Errors are cached and never retried.** A failed fetch gets stored like a
+   successful one, so the component keeps showing the error until something calls
+   `wipeCache`.
