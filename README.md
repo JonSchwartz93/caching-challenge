@@ -67,7 +67,7 @@ Requests are answered by MSW rather than the real network, so this runs offline.
 | Tests (Vitest, one dedupe test) | Biggest gap. "Only 1 network request" is the one criterion you can't verify by reading the code. Vitest because the repo already builds with esbuild and Vitest runs on it; Jest would need a second compiler. |
 | ESLint                          | Most work to set up, least to gain on 200 lines of already-tidy code.                                                                                                                                          |
 
-## Inherited issues
+## Pre-existing issues
 
 ### Fixed: MSW was shipping a stale service worker
 
@@ -78,7 +78,7 @@ read, while the file the build actually ships sat untouched. The browser was
 running a 2.3.1 worker against a 2.15.0 library. Repointed the config, refreshed
 the file.
 
-### Known issues, not fixed
+### Known issues
 
 **`window.__INITIAL_DATA__` isn't escaped.** `buildHtmlDoc.ts:14` drops the cache
 straight into a single-quoted `<script>`. One apostrophe in the API data breaks
