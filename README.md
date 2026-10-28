@@ -57,6 +57,7 @@ Requests are answered by MSW rather than the real network, so this runs offline.
 | `npm run typecheck`           | Turns "it type-checks" from a claim into a command.                                                                                                                        |
 | `prettier` + config           | `.idea/prettier.xml` showed it was meant to be used but never set up. I matched the style already in the files, so nothing got reformatted and `git blame` stays readable. |
 | `.nvmrc`                      | Pins Node 22.                                                                                                                                                              |
+| GitHub Actions CI             | Runs typecheck, format check, and build on every push and pull request.                                                                                                    |
 | MSW worker path               | See below.                                                                                                                                                                 |
 
 ## Deferred
@@ -64,7 +65,6 @@ Requests are answered by MSW rather than the real network, so this runs offline.
 | Item                            | Why not                                                                                                                                                                                                        |
 | ------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Tests (Vitest, one dedupe test) | Biggest gap. "Only 1 network request" is the one criterion you can't verify by reading the code. Vitest because the repo already builds with esbuild and Vitest runs on it; Jest would need a second compiler. |
-| CI (typecheck + build)          | Cheap, just missed the cut.                                                                                                                                                                                    |
 | ESLint                          | Most work to set up, least to gain on 200 lines of already-tidy code.                                                                                                                                          |
 
 ## Inherited issues
